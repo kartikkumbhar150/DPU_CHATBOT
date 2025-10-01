@@ -6,3 +6,4 @@ langchain
 qdrant-client
 groq
 numpy
+gunicorn
