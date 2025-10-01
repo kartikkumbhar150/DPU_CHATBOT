@@ -9,6 +9,7 @@ from groq import Groq
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 from langdetect import detect, DetectorFactory
+import tiktoken
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0  
@@ -41,9 +42,23 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # Memory store (last 5 interactions)
 last_qna: List[Dict[str, Any]] = []
 
+# Tokenizer setup (OpenAI/Groq compatible)
+MAX_TOKENS = 5800
+try:
+    tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")
+except Exception:
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+
 # ==============================================================================
 # ==== UTILITY FUNCTIONS ====
 # ==============================================================================
+
+def truncate_to_token_limit(text: str, max_tokens: int = MAX_TOKENS) -> str:
+    """Ensure text does not exceed token limit."""
+    tokens = tokenizer.encode(text)
+    if len(tokens) > max_tokens:
+        tokens = tokens[:max_tokens]
+    return tokenizer.decode(tokens)
 
 def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     v1, v2 = np.array(vec1), np.array(vec2)
@@ -88,9 +103,12 @@ Context from Database and Memory:
 Question ({lang}): {question}
 Answer in {lang}, clearly and concisely:
 """
+    # Truncate to 5800 tokens before sending
+    safe_prompt = truncate_to_token_limit(prompt, MAX_TOKENS)
+
     try:
         response = groq_client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": safe_prompt}],
             model="llama-3.1-8b-instant",  # better multilingual support
             temperature=0.3,
         )
@@ -119,7 +137,6 @@ def chatbot(question: str) -> str:
     all_context = "\n".join(memory_contexts + db_contexts)
 
     if not all_context.strip():
-        # Localized fallbacks
         localized_fallbacks = {
             "hi": "माफ़ कीजिए, मुझे अपने ज्ञानकोष में इस प्रश्न का उत्तर नहीं मिला।",
             "ta": "மன்னிக்கவும், உங்கள் கேள்விக்கு எனது அறிவகத்தில் பதில் இல்லை.",
