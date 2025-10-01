@@ -8,48 +8,38 @@ from sentence_transformers import SentenceTransformer
 from groq import Groq
 from dotenv import load_dotenv
 from typing import List, Dict, Any
+from langdetect import detect, DetectorFactory
 
-# Load environment variables from .env file
+# Ensure consistent language detection
+DetectorFactory.seed = 0  
+
+# Load environment variables
 load_dotenv()
 
 # ==============================================================================
-# ==== CONFIG & INIT (Reads from .env file) ====
+# ==== CONFIG & INIT ====
 # ==============================================================================
 QDRANT_URL = os.getenv("QDRANT_URL", "").strip()
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
-# Sanity checks
 if not all([QDRANT_URL, GROQ_API_KEY, COLLECTION_NAME]):
-    print("FATAL: Missing one or more required environment variables (QDRANT_URL, GROQ_API_KEY, COLLECTION_NAME).")
+    print("FATAL: Missing one or more required environment variables.")
     exit(1)
 
-# Initialize Clients
-try:
-    qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=15)
-except Exception as e:
-    print(f"Error initializing Qdrant client: {e}")
-    exit(1)
+# Initialize Qdrant client
+qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=15)
 
-try:
-    embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-    VECTOR_SIZE = embed_model.get_sentence_embedding_dimension()
-except Exception as e:
-    print(f"Error initializing SentenceTransformer: {e}")
-    exit(1)
+# Use a multilingual embedding model (supports Indian languages)
+embed_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+VECTOR_SIZE = embed_model.get_sentence_embedding_dimension()
 
-# FIX: Removed the redundant 'base_url' which was causing the 404 error
-# The Groq Python SDK automatically uses the correct OpenAI-compatible base URL.
-try:
-    groq_client = Groq(api_key=GROQ_API_KEY) # <<<<<<<<<<<<<<< FIXED HERE
-except Exception as e:
-    print(f"Error initializing Groq client: {e}")
-    exit(1)
+# Groq client
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Memory store for conversational history (last 5 QnAs)
+# Memory store (last 5 interactions)
 last_qna: List[Dict[str, Any]] = []
-
 
 # ==============================================================================
 # ==== UTILITY FUNCTIONS ====
@@ -62,7 +52,6 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
         return 0.0
     return np.dot(v1, v2) / (norm_v1 * norm_v2)
 
-
 def get_related_from_memory(query_embedding: List[float], threshold: float = 0.8) -> List[str]:
     related_contexts = []
     for qna in last_qna:
@@ -71,45 +60,40 @@ def get_related_from_memory(query_embedding: List[float], threshold: float = 0.8
             related_contexts.append(f"Q: {qna['q']} A: {qna['a']}")
     return related_contexts
 
-
 def query_qdrant(query: str, top_k: int = 3) -> List[str]:
-    """Fetch top matches from Qdrant using query_points (new API)."""
     query_vector_list = embed_model.encode(query).tolist()
-
     hits = qdrant_client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector_list,
         limit=top_k,
         with_payload=True,
     )
-
     contexts = []
-    for hit in hits.points:  # query_points returns a ScoredPointList with .points
+    for hit in hits.points:
         if hit.payload and "text" in hit.payload:
             contexts.append(hit.payload["text"])
     return contexts
 
-
-def ask_groq(question: str, context: str) -> str:
+def ask_groq(question: str, context: str, lang: str) -> str:
     prompt = f"""
-You are a helpful assistant. Use ONLY the following context to answer the question.
-If the context does not contain the answer, state clearly that you cannot answer based on the provided information.
+You are a multilingual assistant that supports Indian languages (Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Malayalam, Kannada, Punjabi, Odia, etc.).
+Use ONLY the following context to answer the question.
+If the context does not contain the answer, clearly say you cannot answer from the given data.
 
 Context from Database and Memory:
 ---
 {context}
 ---
 
-Question: {question}
-Answer clearly and concisely:
+Question ({lang}): {question}
+Answer in {lang}, clearly and concisely:
 """
     try:
         response = groq_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.1-8b-instant",
+            model="llama-3.1-8b-instant",  # better multilingual support
             temperature=0.3,
         )
-
         msg = response.choices[0].message
         if isinstance(msg, dict):
             return msg.get("content", "")
@@ -117,41 +101,52 @@ Answer clearly and concisely:
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"Groq API call failed: {e}")
-        return "I am currently unable to connect to the language model service."
-
+        return f"⚠️ Unable to connect to LLM service (error: {e})."
 
 # ==============================================================================
 # ==== MAIN CHATBOT LOGIC ====
 # ==============================================================================
 
 def chatbot(question: str) -> str:
-    q_vec = embed_model.encode(question).tolist()
+    try:
+        lang = detect(question)  # auto-detect language
+    except Exception:
+        lang = "English"
 
+    q_vec = embed_model.encode(question).tolist()
     memory_contexts = get_related_from_memory(q_vec, threshold=0.8)
     db_contexts = query_qdrant(question, top_k=3)
-
     all_context = "\n".join(memory_contexts + db_contexts)
 
     if not all_context.strip():
-        return "I'm sorry, I couldn't find any relevant information in my dedicated knowledge base to answer that question."
+        # Localized fallbacks
+        localized_fallbacks = {
+            "hi": "माफ़ कीजिए, मुझे अपने ज्ञानकोष में इस प्रश्न का उत्तर नहीं मिला।",
+            "ta": "மன்னிக்கவும், உங்கள் கேள்விக்கு எனது அறிவகத்தில் பதில் இல்லை.",
+            "te": "క్షమించండి, మీ ప్రశ్నకు సమాధానం నా జ్ఞానంలో లభించలేదు.",
+            "bn": "দুঃখিত, আমার জ্ঞানভান্ডারে আপনার প্রশ্নের উত্তর পাওয়া যায়নি।",
+            "mr": "क्षमस्व, मला या प्रश्नाचे उत्तर माझ्या ज्ञानभांडारात मिळाले नाही.",
+            "gu": "માફ કરશો, તમારા પ્રશ્નનો જવાબ મારા જ્ઞાનભંડારમાં મળ્યો નથી.",
+            "ml": "ക്ഷമിക്കണം, നിങ്ങളുടെ ചോദ്യത്തിന് എന്റെ അറിവില്‍ ഉത്തരമില്ല.",
+            "kn": "ಕ್ಷಮಿಸಿ, ನಿಮ್ಮ ಪ್ರಶ್ನೆಗೆ ಉತ್ತರ ನನ್ನ ಜ್ಞಾನಕೋಶದಲ್ಲಿ ಲಭ್ಯವಿಲ್ಲ.",
+            "pa": "ਮਾਫ ਕਰਨਾ, ਤੁਹਾਡੇ ਸਵਾਲ ਦਾ ਜਵਾਬ ਮੇਰੇ ਗਿਆਨ ਵਿੱਚ ਨਹੀਂ ਮਿਲਿਆ।",
+            "or": "ମାପ କରନ୍ତୁ, ଆମର ଜ୍ଞାନଭଣ୍ଡାରରେ ଆପଣଙ୍କ ପ୍ରଶ୍ନର ଉତ୍ତର ମିଳିଲା ନାହିଁ।",
+        }
+        return localized_fallbacks.get(lang, "Sorry, I could not find relevant information to answer this question.")
 
-    answer = ask_groq(question, all_context)
-
+    answer = ask_groq(question, all_context, lang)
     last_qna.append({"q": question, "a": answer, "embedding": q_vec})
     if len(last_qna) > 5:
         last_qna.pop(0)
-
     return answer
 
-
 # ==============================================================================
-# ==== FLASK API SETUP ====
+# ==== FLASK API ====
 # ==============================================================================
 
 app = Flask(__name__)
 
-@app.route("/ask", methods=["POST"])
+@app.route("/api/ask", methods=["POST"])
 def ask():
     try:
         data = request.json
@@ -160,7 +155,7 @@ def ask():
 
     question = data.get("question")
     if not question or not isinstance(question, str):
-        return jsonify({"error": "A valid 'question' string must be provided in the request body."}), 400
+        return jsonify({"error": "A valid 'question' string must be provided."}), 400
 
     start_time = time.time()
     try:
@@ -175,15 +170,13 @@ def ask():
         import traceback
         traceback.print_exc()
         return jsonify({
-            "error": "An internal server error occurred while processing the request.",
+            "error": "Internal server error",
             "detail": str(e)
         }), 500
 
-
 if __name__ == "__main__":
-    print("Starting Flask RAG Chatbot Service...")
+    print("Starting Multilingual RAG Chatbot Service...")
 
-    # CHECK/CREATE COLLECTION
     try:
         try:
             qdrant_client.get_collection(COLLECTION_NAME)
