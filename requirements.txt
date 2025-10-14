@@ -9,3 +9,4 @@ numpy
 gunicorn
 langdetect
 tiktoken
+Flask-Session
