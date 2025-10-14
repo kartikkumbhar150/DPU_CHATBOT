@@ -206,15 +206,45 @@ def ask_groq(question: str, context: str, lang: str) -> str:
     if not groq_client:
         return "LLM integration not configured. Please set GROQ_API_KEY."
 
+    script_requirements = {
+        "hi": "Devanagari script",
+        "mr": "Devanagari script", 
+        "bn": "Bengali script",
+        "ta": "Tamil script",
+        "te": "Telugu script",
+        "kn": "Kannada script",
+        "ml": "Malayalam script",
+        "gu": "Gujarati script",
+        "pa": "Gurmukhi script",
+        "or": "Odia script",
+        "en": "English script"
+    }
+    script = script_requirements.get(lang, "native script")
+
+
     prompt = f"""
 You are an expert AI Assistant for Dr. D. Y. Patil Institute of Technology.
 Also include Dr. D. Y. Patil Institute of Technology college name in the answer.
-Your response language MUST be in '{lang}'.
+Your response language MUST be in '{lang}'. 
+Your MUST write the response in '{script}'. 
+Examples of correct script usage:
+- For Marathi (mr): Use Devanagari script - "डॉ. डी. वाय. पाटील इंस्टिट्यूट ऑफ टेक्नॉलॉजी"
+- For Hindi (hi): Use Devanagari script - "डॉ. डी. वाय. पाटील प्रौद्योगिकी संस्थान"
+- For Tamil (ta): Use Tamil script - "டாக்டர். டி. ஒய். பாட்டில் தொழில்நுட்ப நிறுவனம்"
+- For Bengali (bn): Use Bengali script - "ডক্টর. ডি. ওয়াই. পাটিল ইনস্টিটিউট অফ টেকনোলজি"
+- For Telugu (te): Use Telugu script - "డాక్టర్. డి. వై. పటిల్ ఇన్స్టిట్యూట్ ఆఫ్ టెక్నాలజీ"
+- For Kannada (kn): Use Kannada script - "ಡಾ. ಡಿ. ವೈ. ಪಾಟೀಲ್ ಇನ್ಸ್ಟಿಟ್ಯೂಟ್ ಆಫ್ ಟೆಕ್ನಾಲಜಿ"
+- For Malayalam (ml): Use Malayalam script - "ഡോ. ഡി. വൈ. പാട്ടീൽ ഇൻസ്റ്റിറ്റ്യൂട്ട് ഓഫ് ടെക്നോളജി"
+- For Gujarati (gu): Use Gujarati script - "ડૉ. ડી. વાઈ. પાટીલ ઇન્સ્ટિટ્યૂટ ઓફ ટેકનોલોજી"
+- For Punjabi (pa): Use Gurmukhi script - "ਡਾ. ਡੀ. ਵਾਈ. ਪਾਟੀਲ ਇੰਸਟੀਚਿਊਟ ਆਫ਼ ਟੈਕਨੋਲੋਜੀ"
+- For Odia (or): Use Odia script - "ଡା. ଡି. ୱାଇ. ପାଟିଲ୍ ଇନ୍‌ସ୍ଟିଚ୍ୟୁଟ୍ ଅଫ୍ ଟେକ୍ନୋଲୋଜି" 
 You are a multilingual assistant that supports Indian languages (Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Malayalam, Kannada, Punjabi, Odia, etc.).
 Use the following context from the knowledge base AND previous conversation to answer the question.
 If the context does not contain the answer, answer it Refer to the following site https://engg.dypvp.edu.in/.
 Dont include 'mentioned in the provided context documents' in the answer.
 Do not repeat or restate the question in the answer.
+- Never use Latin alphabet transliteration for Indian languages
+- Always use the proper native script characters
 
 Context from Database and Session Memory:
 ---
@@ -222,7 +252,8 @@ Context from Database and Session Memory:
 ---
 
 Question: {question}
-Answer in {lang}, clearly and concisely:
+
+Answer in {lang} using {script} (native characters only):
 """
     # Truncate the entire prompt safely
     safe_prompt = truncate_to_token_limit(prompt)
